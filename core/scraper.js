@@ -1,55 +1,63 @@
-import { chromium } from "playwright";
+import { fetchChatGptShare, fetchChatGptShareHtml, parseChatGptShareHtml } from "chatgpt-share-parser";
+import { getPage, releasePage } from "./pool.js";
+import { installResourceBlockers } from "./blocker.js";
 
-const PAGE_WAIT_MS = 5000;
 const STRIDE = 6;
-const SCROLL_WAIT_MS = 300;
+const SCROLL_WAIT_MS = 200;
 
 export async function scrapeChatGPT(shareUrl, onProgress) {
-  let browser;
-  try {
-    onProgress?.({ phase: "loading", message: "Launching browser..." });
-
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--no-first-run",
-      ],
-    });
-  } catch (e) {
-    return {
-      turns: [], markdown: "", plainText: "",
-      totalTurns: 0, scrapedAt: new Date().toISOString(),
-      error: `Browser launch failed: ${e.message}`,
-    };
-  }
-
-  const page = await browser.newPage();
+  onProgress?.({ phase: "fastpath", message: "Fetching via API..." });
   const startTime = Date.now();
 
   try {
-    onProgress?.({ phase: "loading", message: "Loading page..." });
+    const chat = await fetchChatGptShare(shareUrl);
 
+    if (chat && chat.replies && chat.replies.length > 0) {
+      const turns = chat.replies.map((r, i) => ({
+        index: i + 1,
+        role: r.type === "user" ? "user" : "assistant",
+        content: formatReply(r),
+      }));
+
+      const elapsed = parseFloat(((Date.now() - startTime) / 1000).toFixed(1));
+      onProgress?.({ phase: "done", message: `Done: ${turns.length} turns (instant)` });
+
+      return {
+        turns,
+        markdown: formatMarkdown(turns),
+        plainText: formatText(turns),
+        totalTurns: turns.length,
+        scrapedAt: new Date().toISOString(),
+        elapsedSeconds: elapsed,
+        method: "fastpath-parser",
+      };
+    }
+  } catch (e) {
+    console.warn("[scraper] Fast path failed:", e.message);
+  }
+
+  onProgress?.({ phase: "loading", message: "Falling back to browser..." });
+  return playwrightFallback(shareUrl, onProgress);
+}
+
+async function playwrightFallback(shareUrl, onProgress) {
+  let page;
+  const startTime = Date.now();
+
+  try {
+    page = await getPage();
+    await installResourceBlockers(page);
     await page.goto(shareUrl, { waitUntil: "load", timeout: 30000 });
-    await page.waitForTimeout(PAGE_WAIT_MS);
+    await page.waitForTimeout(3000);
 
     const turnCount = await page.evaluate(() =>
       document.querySelectorAll('[data-testid^="conversation-turn-"]').length
     );
 
     if (turnCount === 0) {
-      await browser.close();
-      return {
-        turns: [], markdown: "", plainText: "",
-        totalTurns: 0, scrapedAt: new Date().toISOString(),
-        error: "No conversation turns found. The page may require login or the link is invalid.",
-      };
+      await releasePage(page);
+      return { turns: [], markdown: "", plainText: "", totalTurns: 0,
+        scrapedAt: new Date().toISOString(), error: "No turns found." };
     }
 
     onProgress?.({ phase: "scraping", message: `Found ${turnCount} turns`, total: turnCount, current: 0 });
@@ -58,12 +66,10 @@ export async function scrapeChatGPT(shareUrl, onProgress) {
 
     for (let i = 0; i < turnCount; i += STRIDE) {
       const target = Math.min(i + Math.floor(STRIDE / 2), turnCount - 1);
-
       await page.evaluate((idx) => {
         const s = document.querySelectorAll('[data-testid^="conversation-turn-"]')[idx];
         if (s) s.scrollIntoView({ behavior: "instant", block: "center" });
       }, target);
-
       await page.waitForTimeout(SCROLL_WAIT_MS);
 
       const batch = await page.evaluate(() => {
@@ -82,35 +88,47 @@ export async function scrapeChatGPT(shareUrl, onProgress) {
         return res;
       });
 
-      for (const t of batch) {
-        if (!extracted.has(t.index)) extracted.set(t.index, t);
-      }
-
+      for (const t of batch) extracted.set(t.index, t);
       onProgress?.({ phase: "scraping", message: `${extracted.size}/${turnCount}`, total: turnCount, current: extracted.size });
     }
 
     const turns = [...extracted.values()].sort((a, b) => a.index - b.index);
-    await browser.close();
+    await releasePage(page);
 
     const elapsed = parseFloat(((Date.now() - startTime) / 1000).toFixed(1));
 
     return {
       turns,
-      markdown: formatMarkdown(turns),
-      plainText: formatText(turns),
+      markdown: formatMarkdown(extractedTurnsToArray(turns)),
+      plainText: formatText(extractedTurnsToArray(turns)),
       totalTurns: turns.length,
       scrapedAt: new Date().toISOString(),
       elapsedSeconds: elapsed,
-      method: "playwright-batched",
+      method: "playwright-fallback",
     };
   } catch (e) {
-    await browser.close();
-    return {
-      turns: [], markdown: "", plainText: "",
-      totalTurns: 0, scrapedAt: new Date().toISOString(),
-      error: `Scrape failed: ${e.message}`,
-    };
+    if (page) await releasePage(page);
+    throw e;
   }
+}
+
+function extractedTurnsToArray(turns) {
+  return turns.map(t => ({ index: t.index, role: t.role, content: t.content }));
+}
+
+function formatReply(reply) {
+  const prefix = reply.type === "assistant" ? "ChatGPT said:" : "You said:";
+  let text = prefix + reply.statement;
+
+  if (reply.assets && reply.assets.length > 0) {
+    for (const asset of reply.assets) {
+      if (asset.assetType === "image") {
+        text += `\n[${asset.assetType}: ${asset.filename || asset.url}]`;
+      }
+    }
+  }
+
+  return text;
 }
 
 export function formatMarkdown(turns) {

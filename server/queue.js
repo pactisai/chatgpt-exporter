@@ -1,54 +1,52 @@
-import { EventEmitter } from "events";
 import { scrapeChatGPT } from "../core/scraper.js";
 
 const MAX_CONCURRENT = 2;
-const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const MAX_JOBS = 1000;
+const MAX_CACHE = 100;
+const CACHE_TTL = 60 * 60 * 1000;
+const JOB_TTL = 30 * 60 * 1000;
 
 const jobs = new Map();
 const cache = new Map();
 let running = 0;
-const emitter = new EventEmitter();
 
 export function enqueue(url) {
-  const id = crypto.randomUUID();
-
   const cached = cache.get(url);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    const id = crypto.randomUUID();
     jobs.set(id, { id, status: "done", url, result: cached.result, createdAt: Date.now() });
     return id;
   }
 
+  cleanOld(jobs, JOB_TTL);
+  if (jobs.size >= MAX_JOBS) return null;
+
+  const id = crypto.randomUUID();
   jobs.set(id, {
     id,
     status: "queued",
     url,
-    progress: { phase: "queued", message: "Waiting in queue..." },
+    progress: { phase: "queued", message: "Waiting..." },
     createdAt: Date.now(),
   });
 
-  emitter.emit("job:new", id);
+  processNext();
   return id;
 }
 
 export function getJob(id) {
   const job = jobs.get(id);
   if (!job) return null;
-
   const { status, progress, result, error, url, createdAt } = job;
-  return { id, status, progress, result, error, url, createdAt, queueSize: running > 0 ? queueSize() : 0 };
+  return { id, status, progress, result, error, url, createdAt };
 }
 
-export function queueSize() {
-  let count = 0;
+function dequeueNext() {
   for (const [, job] of jobs) {
-    if (job.status === "queued") count++;
-  }
-  return count;
-}
-
-function getNextQueued() {
-  for (const [, job] of jobs) {
-    if (job.status === "queued") return job;
+    if (job.status === "queued") {
+      job.status = "processing";
+      return job;
+    }
   }
   return null;
 }
@@ -56,11 +54,10 @@ function getNextQueued() {
 async function processNext() {
   if (running >= MAX_CONCURRENT) return;
 
-  const job = getNextQueued();
+  let job = dequeueNext();
   if (!job) return;
 
   running++;
-  job.status = "processing";
   job.startedAt = Date.now();
 
   try {
@@ -72,22 +69,33 @@ async function processNext() {
     job.result = result;
     job.completedAt = Date.now();
 
+    cleanOld(cache, MAX_CACHE * 2);
+    if (cache.size >= MAX_CACHE) {
+      const first = cache.keys().next().value;
+      cache.delete(first);
+    }
     cache.set(job.url, { timestamp: Date.now(), result });
   } catch (e) {
     job.status = "error";
     job.error = e.message;
     job.completedAt = Date.now();
+    console.error("[queue] Job failed:", e.message);
   } finally {
     running--;
-    emitter.emit("job:done", job.id);
     processNext();
   }
 }
 
-emitter.on("job:new", () => {
-  while (running < MAX_CONCURRENT) {
-    const next = getNextQueued();
-    if (!next) break;
-    processNext();
+function cleanOld(map, maxAge) {
+  const now = Date.now();
+  for (const [key, entry] of map) {
+    if (now - (entry.createdAt || entry.timestamp || 0) > maxAge) {
+      map.delete(key);
+    }
   }
-});
+}
+
+setInterval(() => {
+  cleanOld(jobs, JOB_TTL);
+  cleanOld(cache, CACHE_TTL);
+}, 5 * 60 * 1000);

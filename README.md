@@ -1,38 +1,65 @@
 # ChatGPT Exporter
 
-Any ChatGPT share link → Markdown, JSON, or plain text.
-Works as a **web app** and as an **MCP server** for AI agents.
+> **Live**: [chatgpt-exporter.up.railway.app](https://chatgpt-exporter.up.railway.app)
+
+Paste any public ChatGPT share link. Get the full conversation as **Markdown, JSON, or plain text**. Web app + MCP server.
+
+---
+
+## Features
+
+- **Instant extraction** via [chatgpt-share-parser](https://github.com/evanhu1/chatgpt-share-parser) (React Flight/turbo-stream parsing)
+- **Playwright fallback** for resilient scraping
+- **SSE streaming** progress
+- **MCP server** — 2 tools for AI agents (Claude, Cursor, VS Code Copilot)
+- **Job queue** + LRU cache
+- **Rate limiting**, Helmet security headers, graceful shutdown
 
 ---
 
 ## Architecture
 
 ```
-chatgpt-exporter/
-├── core/
-│   └── scraper.js       # Shared scraping engine (Playwright)
-├── server/
-│   └── index.js          # Express web server (SSE streaming)
-├── mcp/
-│   └── index.js          # MCP server (stdio transport)
-├── client/
-│   └── src/              # React frontend (Vite + Tailwind)
-└── package.json          # Runs both web + MCP
-```
+core/
+├── scraper.js          # Primary: chatgpt-share-parser (instant)
+│                       # Fallback: Playwright + browser pool
+├── pool.js             # Headless Chromium singleton
+├── blocker.js          # Resource blocking during Playwright scrape
+└── validate.js         # URL validation (SSRF-proof)
 
-**`core/scraper.js`** is the single source of truth — both the web server and MCP server import from it.
+server/
+├── index.js            # Express 5 + helmet + rate limiter
+├── queue.js            # Priority queue + LRU cache
+└── og-image.js         # OG image generation (sharp)
+
+mcp/
+└── index.js            # MCP server (stdio transport, 2 tools)
+
+client/
+└── src/                # React 19 + Vite 8 + Tailwind 4
+```
 
 ---
 
-## Web App
+## Performance
+
+| Conversation | chatgpt-share-parser | Playwright fallback |
+|---|---|---|
+| 20 turns | **<1s** | ~8s |
+| 327 turns | **~1.5s** | ~40s |
+
+---
+
+## Quick Start
 
 ```bash
-npm install && npx playwright install chromium
-npm run build && npm start
+npm install
+npm run build
+npm start
 # → http://localhost:3001
 ```
 
-### Dev Mode
+### Dev
 
 ```bash
 npm run dev
@@ -41,7 +68,7 @@ npm run dev
 
 ---
 
-## MCP Server (for AI Agents)
+## MCP Server
 
 Add to your MCP client config:
 
@@ -50,60 +77,43 @@ Add to your MCP client config:
   "mcpServers": {
     "chatgpt-exporter": {
       "command": "node",
-      "args": ["/absolute/path/to/apps/chatgpt-exporter/mcp/index.js"]
+      "args": ["/path/to/mcp/index.js"]
     }
   }
 }
 ```
 
-### MCP Tools
+**Tools**: `extract_chatgpt_share` (full), `extract_chatgpt_summary` (preview)
 
-| Tool | Description |
-|---|---|
-| `extract_chatgpt_share` | Full conversation extraction (JSON, Markdown, or text) |
-| `extract_chatgpt_summary` | Fast preview — first turn + metadata only |
+---
 
-### Example MCP Call
+## Deploy
 
-```json
-{
-  "tool": "extract_chatgpt_share",
-  "params": {
-    "url": "https://chatgpt.com/share/abc123...",
-    "format": "markdown"
-  }
-}
-```
+### Railway (recommended)
 
-The MCP server uses **stdio transport** — compatible with Claude Desktop, Cursor, VS Code Copilot, and any MCP-compatible client.
+1. Push to GitHub
+2. [railway.app](https://railway.app) → New Project → Deploy from GitHub
+3. Build command: `npm install && npm run build`
+4. Start command: `npm start`
+5. Env var: `PORT=3001`
 
-### Debug MCP
+No Chromium needed — the fast path uses plain HTTP.
+
+### Docker
 
 ```bash
-npm run mcp:inspect
-# Opens MCP Inspector in browser to test tools interactively
+docker build -t chatgpt-exporter .
+docker run -p 3001:3001 chatgpt-exporter
 ```
 
 ---
 
-## Deploy (Web App Only)
+## Credits
 
-> Serverless (Vercel/Netlify) won't work — Playwright requires headless Chromium.
+- Extraction engine: [evanhu1/chatgpt-share-parser](https://github.com/evanhu1/chatgpt-share-parser) (MIT) — ported from [vl3c/ChatPeek](https://github.com/vl3c/ChatPeek)
+- Headless browser: [Playwright](https://playwright.dev)
+- OG image: [sharp](https://sharp.pixelplumbing.com)
 
-| Platform | Ease |
-|---|---|
-| **Railway** | Easiest — GitHub push, set root dir, deploy |
-| **Render** | Easy — Web Service, free tier available |
-| **Fly.io** | Medium — `fly deploy` via Dockerfile |
-| **Docker + VPS** | Medium — docker build && docker run |
+## License
 
-Dockerfile included. See the full deployment section above.
-
----
-
-## Tech
-
-- **Scraper**: Playwright + headless Chromium
-- **Web Backend**: Express 5 (SSE streaming)
-- **MCP Backend**: `@modelcontextprotocol/sdk` (stdio transport)
-- **Frontend**: React 19 + Vite 8 + Tailwind CSS 4
+MIT

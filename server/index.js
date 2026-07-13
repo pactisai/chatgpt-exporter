@@ -1,21 +1,41 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { scrapeChatGPT } from "../core/scraper.js";
 import { enqueue, getJob } from "./queue.js";
+import { warmPool, closePool } from "../core/pool.js";
 import { getOgImage } from "./og-image.js";
+import { isValidShareUrl } from "../core/validate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 const DIST_DIR = path.join(__dirname, "..", "dist");
 
-app.use(cors());
-app.use(express.json());
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
+app.use(cors({ origin: process.env.CORS_ORIGIN || "*", methods: ["GET", "POST"] }));
+app.use(express.json({ type: "application/json", limit: "10kb" }));
 
-app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Try again later." },
+});
+app.use("/api", apiLimiter);
+
+app.get("/api/health", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ status: "ok" });
+});
 
 app.get("/og-image.png", async (_req, res) => {
   try {
@@ -23,15 +43,21 @@ app.get("/og-image.png", async (_req, res) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(png);
-  } catch { res.status(500).end(); }
+  } catch (e) {
+    res.status(500).end();
+  }
 });
 
 app.post("/api/jobs", (req, res) => {
   const { url } = req.body;
-  if (!url || !url.includes("chatgpt.com/share/")) {
+  if (!isValidShareUrl(url)) {
     return res.status(400).json({ error: "Valid ChatGPT share URL required." });
   }
-  res.json({ jobId: enqueue(url.trim()), status: "queued" });
+  const jobId = enqueue(url.trim());
+  if (!jobId) {
+    return res.status(503).json({ error: "Server busy. Try again later." });
+  }
+  res.json({ jobId, status: "queued" });
 });
 
 app.get("/api/jobs/:jobId", (req, res) => {
@@ -42,7 +68,7 @@ app.get("/api/jobs/:jobId", (req, res) => {
 
 app.post("/api/scrape", async (req, res) => {
   const { url } = req.body;
-  if (!url || !url.includes("chatgpt.com/share/")) {
+  if (!isValidShareUrl(url)) {
     return res.status(400).json({ error: "Valid ChatGPT share URL required." });
   }
   res.setHeader("Content-Type", "text/event-stream");
@@ -60,27 +86,50 @@ app.post("/api/scrape", async (req, res) => {
   }
 });
 
-// Inject OG tags for root path
 app.get("/", (req, res) => {
   const indexPath = path.join(DIST_DIR, "index.html");
   if (!fs.existsSync(indexPath)) return res.status(404).send("Not Found");
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-  const img = `${baseUrl}/og-image.png`;
   let html = fs.readFileSync(indexPath, "utf8");
   html = html.replace("</head>",
     `<meta property="og:title" content="ChatGPT Exporter by Pactis" />
-    <meta property="og:description" content="Paste any ChatGPT share link — get the full conversation as Markdown, JSON, or plain text. Free tool by Pactis." />
+    <meta property="og:description" content="Paste any ChatGPT share link — get the full conversation as Markdown, JSON, or plain text." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="${baseUrl}" />
-    <meta property="og:image" content="${img}" />
+    <meta property="og:image" content="${baseUrl}/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="${img}" />
+    <meta name="twitter:image" content="${baseUrl}/og-image.png" />
   </head>`);
   res.send(html);
 });
 
 app.use(express.static(DIST_DIR));
 
-app.listen(PORT, () => console.log(`ChatGPT Exporter → :${PORT}`));
+app.use((err, _req, res, _next) => {
+  console.error("[server] Unhandled error:", err.message);
+  if (!res.headersSent) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+const server = app.listen(PORT, async () => {
+  console.log(`ChatGPT Exporter → :${PORT}`);
+  await warmPool();
+});
+
+async function shutdown(signal) {
+  console.log(`[server] ${signal}, shutting down...`);
+  server.close(async () => {
+    await closePool();
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 30000);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] Unhandled rejection:", reason);
+});
