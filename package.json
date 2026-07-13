@@ -15,10 +15,14 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.3",
     "chatgpt-share-parser": "^0.1.1",
+    "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.3.0",
+    "lru-cache": "^11.5.2",
+    "lucide-react": "^1.24.0",
+    "p-queue": "^9.3.1",
     "playwright": "^1.61.1",
     "sharp": "^0.35.3",
     "zod": "^3.25.76"

@@ -4,6 +4,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import path from "path";
 import fs from "fs";
+import { load } from "cheerio";
 import { fileURLToPath } from "url";
 import { scrapeChatGPT } from "../core/scraper.js";
 import { enqueue, getJob } from "./queue.js";
@@ -43,9 +44,7 @@ app.get("/og-image.png", async (_req, res) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(png);
-  } catch (e) {
-    res.status(500).end();
-  }
+  } catch { res.status(500).end(); }
 });
 
 app.post("/api/jobs", (req, res) => {
@@ -90,28 +89,27 @@ app.get("/", (req, res) => {
   const indexPath = path.join(DIST_DIR, "index.html");
   if (!fs.existsSync(indexPath)) return res.status(404).send("Not Found");
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-  let html = fs.readFileSync(indexPath, "utf8");
-  html = html.replace("</head>",
-    `<meta property="og:title" content="ChatGPT Exporter by Pactis" />
-    <meta property="og:description" content="Paste any ChatGPT share link — get the full conversation as Markdown, JSON, or plain text." />
-    <meta property="og:type" content="website" />
-    <meta property="og:url" content="${baseUrl}" />
-    <meta property="og:image" content="${baseUrl}/og-image.png" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="${baseUrl}/og-image.png" />
-  </head>`);
-  res.send(html);
+  const img = `${baseUrl}/og-image.png`;
+
+  const $ = load(fs.readFileSync(indexPath, "utf8"));
+  $("head").append(`<meta property="og:title" content="ChatGPT Exporter by Pactis" />`);
+  $("head").append(`<meta property="og:description" content="Paste any ChatGPT share link — get the full conversation as Markdown, JSON, or plain text." />`);
+  $("head").append(`<meta property="og:type" content="website" />`);
+  $("head").append(`<meta property="og:url" content="${baseUrl}" />`);
+  $("head").append(`<meta property="og:image" content="${img}" />`);
+  $("head").append(`<meta property="og:image:width" content="1200" />`);
+  $("head").append(`<meta property="og:image:height" content="630" />`);
+  $("head").append(`<meta name="twitter:card" content="summary_large_image" />`);
+  $("head").append(`<meta name="twitter:image" content="${img}" />`);
+
+  res.send($.html());
 });
 
 app.use(express.static(DIST_DIR));
 
 app.use((err, _req, res, _next) => {
   console.error("[server] Unhandled error:", err.message);
-  if (!res.headersSent) {
-    res.status(500).json({ error: "Internal server error" });
-  }
+  if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
 });
 
 const server = app.listen(PORT, async () => {

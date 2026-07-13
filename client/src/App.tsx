@@ -1,4 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import {
+  Link, X, AlertTriangle, Download, MessageSquare,
+  Clock, FileText, Hash, RotateCw, Zap,
+} from "lucide-react";
 
 interface Turn {
   index: number;
@@ -21,9 +25,6 @@ interface JobStatus {
   progress?: { phase: string; message: string; total?: number; current?: number };
   result?: ScrapeResult;
   error?: string;
-  url?: string;
-  createdAt?: number;
-  queueSize?: number;
 }
 
 type ExportFormat = "markdown" | "json" | "text";
@@ -43,8 +44,6 @@ export default function App() {
   const [progressMsg, setProgressMsg] = useState("");
   const [progressPct, setProgressPct] = useState(0);
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [queuePos, setQueuePos] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -57,8 +56,8 @@ export default function App() {
     if (!url.trim()) return;
     setStatus("loading");
     setError("");
-    setProgressMsg("Enqueueing job...");
-    setProgressPct(0);
+    setProgressMsg("Submitting...");
+    setProgressPct(2);
     setResult(null);
 
     try {
@@ -73,55 +72,65 @@ export default function App() {
         throw new Error(d?.error || `Server error (${res.status})`);
       }
 
-      const { jobId: jid } = await res.json();
-      setJobId(jid);
-      pollJob(jid);
+      const { jobId } = await res.json();
+      let failCount = 0;
+
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        try {
+          const jr = await fetch(`/api/jobs/${jobId}`);
+          if (!jr.ok) {
+            failCount++;
+            if (failCount > 5) {
+              clearInterval(pollRef.current);
+              setError("Server connection lost. Please try again.");
+              setStatus("error");
+            }
+            return;
+          }
+          failCount = 0;
+          const job: JobStatus = await jr.json();
+
+          if (job.status === "done" && job.result) {
+            clearInterval(pollRef.current);
+            setResult(job.result);
+            setStatus("done");
+            setProgressPct(100);
+            return;
+          }
+
+          if (job.status === "error") {
+            clearInterval(pollRef.current);
+            setError(job.error || "Unknown error");
+            setStatus("error");
+            return;
+          }
+
+          if (job.progress) {
+            setProgressMsg(job.progress.message || "Processing...");
+            if (job.progress.total && job.progress.current) {
+              setProgressPct(Math.round((job.progress.current / job.progress.total) * 100));
+            }
+          }
+
+          if (job.status === "queued") {
+            setProgressMsg("Waiting in queue...");
+            setProgressPct(1);
+          }
+        } catch {
+          failCount++;
+          if (failCount > 5) {
+            clearInterval(pollRef.current);
+            setError("Network error. Please try again.");
+            setStatus("error");
+          }
+        }
+      }, 1000);
     } catch (e: any) {
       setError(e.message);
       setStatus("error");
     }
   }, [url]);
-
-  const pollJob = useCallback((jid: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/jobs/${jid}`);
-        if (!res.ok) return;
-        const job: JobStatus = await res.json();
-
-        setQueuePos(job.queueSize || 0);
-
-        if (job.status === "done" && job.result) {
-          clearInterval(pollRef.current);
-          setResult(job.result);
-          setStatus("done");
-          setProgressPct(100);
-          return;
-        }
-
-        if (job.status === "error") {
-          clearInterval(pollRef.current);
-          setError(job.error || "Unknown error");
-          setStatus("error");
-          return;
-        }
-
-        if (job.progress) {
-          setProgressMsg(job.progress.message || "Processing...");
-          if (job.progress.total && job.progress.current) {
-            setProgressPct(Math.round((job.progress.current / job.progress.total) * 100));
-          }
-        }
-
-        if (job.status === "queued") {
-          setProgressMsg(`In queue${job.queueSize ? ` (${job.queueSize} ahead)` : ""}...`);
-          setProgressPct(1);
-        }
-      } catch { /* poll silent fail */ }
-    }, 1000);
-  }, []);
 
   const handleDownload = (format: ExportFormat) => {
     if (!result) return;
@@ -141,7 +150,7 @@ export default function App() {
 
   const reset = () => {
     if (pollRef.current) clearInterval(pollRef.current);
-    setStatus("idle"); setResult(null); setUrl(""); setProgressPct(0); setJobId(null); setQueuePos(0);
+    setStatus("idle"); setResult(null); setUrl(""); setProgressPct(0);
   };
 
   return (
@@ -151,7 +160,6 @@ export default function App() {
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-[#6C5CE7]/5 rounded-full blur-[120px] pointer-events-none" />
 
         <div className="max-w-4xl mx-auto px-4 py-16 relative">
-          {/* Navbar */}
           <nav className="flex items-center justify-between mb-16 slide-up">
             <a href="https://www.pactis-ai.com" target="_blank" rel="noopener" className="flex items-center gap-2.5 text-[#a1a1aa] hover:text-[#f5f5f5] transition-colors">
               <PactisLogo />
@@ -163,7 +171,6 @@ export default function App() {
             </span>
           </nav>
 
-          {/* Hero */}
           <header className="text-center mb-12 slide-up">
             <h1 className="text-5xl font-bold tracking-tight mb-4 text-[#f5f5f5]">
               ChatGPT{" "}
@@ -175,12 +182,11 @@ export default function App() {
             <p className="text-[#52525b] text-sm mt-3 italic">We Rise by Lifting Others.</p>
           </header>
 
-          {/* Input */}
           <div className={`mx-auto max-w-2xl transition-all duration-500 ${status === "done" ? "opacity-50 scale-95 pointer-events-none" : ""}`}>
             <div className="bg-[#121212] border border-[#2a2a2a] rounded-2xl p-1 glow-indigo">
               <div className="flex items-center gap-2 bg-[#0a0a0a] rounded-xl p-2">
                 <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-lg bg-[#6C5CE7]/10 text-[#8B7CF6]">
-                  <LinkIcon />
+                  <Link size={18} />
                 </div>
                 <input
                   ref={inputRef}
@@ -194,7 +200,7 @@ export default function App() {
                 />
                 {url && (
                   <button onClick={() => { setUrl(""); inputRef.current?.focus(); }} className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-[#52525b] hover:text-[#a1a1aa] hover:bg-[#1a1a1a] transition-colors cursor-pointer">
-                    <XIcon />
+                    <X size={16} />
                   </button>
                 )}
                 <button
@@ -211,14 +217,13 @@ export default function App() {
                 { label: "Markdown", c: "text-[#06D6A0] border-[#06D6A0]/20 bg-[#06D6A0]/5" },
                 { label: "JSON", c: "text-amber-400 border-amber-500/20 bg-amber-500/5" },
                 { label: "Text", c: "text-sky-400 border-sky-500/20 bg-sky-500/5" },
-                { label: "Queue-backed", c: "text-[#a1a1aa] border-[#2a2a2a] bg-[#121212]" },
+                { label: "Open Source", c: "text-[#a1a1aa] border-[#2a2a2a] bg-[#121212]" },
               ].map((f) => (
                 <span key={f.label} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border ${f.c}`}>{f.label}</span>
               ))}
             </div>
           </div>
 
-          {/* Loading */}
           {status === "loading" && (
             <div className="max-w-lg mx-auto mt-12 slide-up">
               <div className="bg-[#121212] border border-[#2a2a2a] rounded-2xl p-8 text-center">
@@ -242,19 +247,16 @@ export default function App() {
                 <div className="w-full bg-[#1a1a1a] rounded-full h-1.5 overflow-hidden">
                   <div className="h-full rounded-full transition-all duration-500 ease-out pactis-gradient" style={{ width: `${Math.max(progressPct, 2)}%` }} />
                 </div>
-                {jobId && (
-                  <p className="text-[#3a3a3a] text-xs mt-4 font-mono">Job: {jobId.slice(0, 8)}...</p>
-                )}
+                <p className="text-[#52525b] text-xs mt-4">Large conversations may take 1–2 minutes. Live progress streaming.</p>
               </div>
             </div>
           )}
 
-          {/* Error */}
           {status === "error" && (
             <div className="max-w-lg mx-auto mt-12 slide-up">
               <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-8 text-center">
                 <div className="w-14 h-14 mx-auto mb-4 flex items-center justify-center rounded-full bg-red-500/10">
-                  <AlertIcon />
+                  <AlertTriangle size={24} className="text-red-400" />
                 </div>
                 <h3 className="text-red-300 font-semibold mb-1">Extraction Failed</h3>
                 <p className="text-red-400/70 text-sm mb-5">{error}</p>
@@ -263,15 +265,14 @@ export default function App() {
             </div>
           )}
 
-          {/* Done */}
           {status === "done" && result && (
             <div className="max-w-4xl mx-auto mt-8 fade-in">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8 slide-up">
                 {[
-                  { label: "Turns", value: result.totalTurns, icon: <MessageIcon />, color: "border-[#6C5CE7]/20 bg-[#6C5CE7]/5" },
-                  { label: "Duration", value: `${result.elapsedSeconds}s`, icon: <ClockIcon />, color: "border-[#06D6A0]/20 bg-[#06D6A0]/5" },
-                  { label: "Size", value: fmtBytes(result.markdown.length), icon: <FileIcon />, color: "border-amber-500/20 bg-amber-500/5" },
-                  { label: "Words", value: result.plainText.split(/\s+/).length.toLocaleString(), icon: <HashIcon />, color: "border-sky-500/20 bg-sky-500/5" },
+                  { label: "Turns", value: result.totalTurns, icon: <MessageSquare size={18} className="text-[#8B7CF6]" />, color: "border-[#6C5CE7]/20 bg-[#6C5CE7]/5" },
+                  { label: "Duration", value: `${result.elapsedSeconds}s`, icon: <Clock size={18} className="text-[#06D6A0]" />, color: "border-[#06D6A0]/20 bg-[#06D6A0]/5" },
+                  { label: "Size", value: fmtBytes(result.markdown.length), icon: <FileText size={18} className="text-amber-400" />, color: "border-amber-500/20 bg-amber-500/5" },
+                  { label: "Words", value: result.plainText.split(/\s+/).length.toLocaleString(), icon: <Hash size={18} className="text-sky-400" />, color: "border-sky-500/20 bg-sky-500/5" },
                 ].map((s) => (
                   <div key={s.label} className={`flex items-center gap-3 p-4 rounded-xl border ${s.color}`}>
                     <div className="flex-shrink-0 opacity-70">{s.icon}</div>
@@ -310,19 +311,18 @@ export default function App() {
 
               <div className="mt-6 text-center">
                 <button onClick={reset} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-[#a1a1aa] hover:text-[#f5f5f5] hover:bg-[#121212] transition-colors text-sm cursor-pointer">
-                  <RefreshIcon /> Extract Another
+                  <RotateCw size={14} /> Extract Another
                 </button>
               </div>
             </div>
           )}
 
-          {/* Empty */}
           {status === "idle" && (
             <div className="max-w-md mx-auto mt-16 text-center fade-in">
               <div className="relative w-20 h-20 mx-auto mb-6">
                 <div className="absolute inset-0 bg-[#6C5CE7]/20 rounded-2xl blur-xl" />
                 <div className="relative w-full h-full flex items-center justify-center rounded-2xl bg-[#121212] border border-[#2a2a2a]">
-                  <BoltIcon />
+                  <Zap size={32} fill="#8B7CF6" color="#8B7CF6" />
                 </div>
               </div>
               <h3 className="text-[#f5f5f5] font-semibold mb-2">Ready to Export</h3>
@@ -333,7 +333,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Footer */}
           <footer className="mt-24 pt-8 border-t border-[#1a1a1a] text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
               <PactisLogoSmall />
@@ -349,7 +348,6 @@ export default function App() {
   );
 }
 
-/* ── Download Button ── */
 function DownloadBtn({ format, onClick }: { format: ExportFormat; onClick: (f: ExportFormat) => void }) {
   const c: Record<ExportFormat, { label: string; ext: string; cls: string }> = {
     markdown: { label: "Markdown", ext: ".md", cls: "text-[#06D6A0] border-[#06D6A0]/30 hover:border-[#06D6A0]/50 hover:bg-[#06D6A0]/10" },
@@ -359,47 +357,16 @@ function DownloadBtn({ format, onClick }: { format: ExportFormat; onClick: (f: E
   const { label, ext, cls } = c[format];
   return (
     <button onClick={() => onClick(format)} className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg border bg-[#0a0a0a] transition-all cursor-pointer text-sm font-medium ${cls}`}>
-      <DownloadIcon /> {label} <span className="opacity-50 text-xs">{ext}</span>
+      <Download size={14} /> {label} <span className="opacity-50 text-xs">{ext}</span>
     </button>
   );
 }
 
-/* ── Icons ── */
 function PactisLogo() {
   return <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="#6C5CE7"/><path d="M8 16L14 22L24 10" stroke="#f5f5f5" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 function PactisLogoSmall() {
   return <svg width="14" height="14" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="#6C5CE7"/><path d="M8 16L14 22L24 10" stroke="#f5f5f5" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-}
-function BoltIcon() {
-  return <svg width="32" height="32" viewBox="0 0 24 24" fill="#8B7CF6"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>;
-}
-function LinkIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>;
-}
-function XIcon() {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
-}
-function AlertIcon() {
-  return <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-400"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>;
-}
-function DownloadIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
-}
-function MessageIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#8B7CF6]"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>;
-}
-function ClockIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#06D6A0]"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>;
-}
-function FileIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>;
-}
-function HashIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-400"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>;
-}
-function RefreshIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>;
 }
 
 function fmtBytes(b: number): string {
