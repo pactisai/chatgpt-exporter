@@ -5,6 +5,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { scrapeChatGPT } from "../core/scraper.js";
 import { enqueue, getJob } from "./queue.js";
+import { ogMiddleware } from "./og-middleware.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -16,27 +17,6 @@ app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", distExists: fs.existsSync(path.join(DIST_DIR, "index.html")) });
-});
-
-app.get("/api/debug", async (_req, res) => {
-  try {
-    const { chromium } = await import("playwright");
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox", "--disable-setuid-sandbox"],
-    });
-    const page = await browser.newPage();
-    await page.goto("https://chatgpt.com/share/6a5522a8-e9fc-83ed-8a8c-2c46e8c50bae", { waitUntil: "load", timeout: 15000 });
-    const title = await page.title();
-    const sections = await page.evaluate(() =>
-      document.querySelectorAll('[data-testid^="conversation-turn-"]').length
-    );
-    const bodyText = await page.evaluate(() => document.body.innerText.substring(0, 500));
-    await browser.close();
-    res.json({ title, sections, bodyPreview: bodyText });
-  } catch (e) {
-    res.json({ error: e.message });
-  }
 });
 
 app.post("/api/jobs", (req, res) => {
@@ -76,8 +56,33 @@ app.post("/api/scrape", async (req, res) => {
 
 app.use(express.static(DIST_DIR));
 
-app.use((_req, res) => {
-  res.sendFile(path.join(DIST_DIR, "index.html"));
+app.use((req, res) => {
+  const indexPath = path.join(DIST_DIR, "index.html");
+  if (fs.existsSync(indexPath)) {
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const originalHtml = fs.readFileSync(indexPath, "utf8");
+    const scriptsMatch = originalHtml.match(/src="(\/assets\/[^"]+)"/);
+    const cssMatch = originalHtml.match(/href="(\/assets\/[^"]+)"/);
+    const injected = originalHtml
+      .replace(/<meta property="og:image" content="[^"]*"[^>]*>/g, "")
+      .replace("</head>", `<meta property="og:title" content="ChatGPT Exporter by Pactis" />
+    <meta property="og:description" content="Paste any ChatGPT share link — get the full conversation as Markdown, JSON, or plain text." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Pactis" />
+    <meta property="og:url" content="${baseUrl}" />
+    <meta property="og:image" content="${baseUrl}/og-image.svg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:type" content="image/svg+xml" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ChatGPT Exporter by Pactis" />
+    <meta name="twitter:description" content="Paste any ChatGPT share link — get the full conversation." />
+    <meta name="twitter:image" content="${baseUrl}/og-image.svg" />
+  </head>`);
+    res.send(injected);
+  } else {
+    res.status(404).send("Not Found");
+  }
 });
 
 app.listen(PORT, () => {
