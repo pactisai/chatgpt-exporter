@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import path from "path";
 import fs from "fs";
 import { load } from "cheerio";
+import { createHttpTerminator } from "http-terminator";
 import { fileURLToPath } from "url";
 import { scrapeChatGPT } from "../core/scraper.js";
 import { enqueue, getJob } from "./queue.js";
@@ -117,13 +118,14 @@ const server = app.listen(PORT, async () => {
   await warmPool();
 });
 
+const httpTerminator = createHttpTerminator({ server });
+
 async function shutdown(signal) {
-  console.log(`[server] ${signal}, shutting down...`);
-  server.close(async () => {
-    await closePool();
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(1), 30000);
+  console.log(`[server] ${signal}, shutting down gracefully...`);
+  await httpTerminator.terminate();
+  await closePool();
+  console.log("[server] Shutdown complete");
+  process.exit(0);
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
