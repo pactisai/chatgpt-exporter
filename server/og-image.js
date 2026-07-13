@@ -1,0 +1,23 @@
+import sharp from "sharp";
+
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0a0a0a"/>
+  <rect x="40" y="40" width="1120" height="550" rx="24" fill="#121212" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="80" y="80" width="80" height="80" rx="20" fill="#6C5CE7"/>
+  <path d="M96 118l20 20 28-28" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <text x="180" y="138" fill="#f5f5f5" font-size="36" font-family="Arial,sans-serif" font-weight="700">Pactis</text>
+  <text x="80" y="270" fill="#f5f5f5" font-size="64" font-family="Arial,sans-serif" font-weight="800">ChatGPT Exporter</text>
+  <text x="80" y="340" fill="#a1a1aa" font-size="28" font-family="Arial,sans-serif">Paste any ChatGPT share link — get the full conversation</text>
+  <text x="80" y="400" fill="#a1a1aa" font-size="28" font-family="Arial,sans-serif">as Markdown, JSON, or plain text.</text>
+  <rect x="80" y="460" width="240" height="56" rx="14" fill="#6C5CE7"/>
+  <text x="200" y="497" fill="#fff" font-size="24" font-family="Arial,sans-serif" font-weight="700" text-anchor="middle">Free Tool</text>
+  <text x="1040" y="580" fill="#52525b" font-size="20" font-family="Arial,sans-serif" text-anchor="end">pactis-ai.com</text>
+</svg>`;
+
+let cachedPng = null;
+
+export async function getOgImage() {
+  if (cachedPng) return cachedPng;
+  cachedPng = await sharp(Buffer.from(svg)).png().toBuffer();
+  return cachedPng;
+}
