@@ -1,0 +1,16 @@
+export const mockPlaywrightTurns = [
+  { authorName: "User", type: "user", statement: "Hello, how does this work?", createdAt: Date.now(), assets: [] },
+  { authorName: "ChatGPT", type: "assistant", statement: "Hi! I'm doing well.", createdAt: Date.now(), assets: [] },
+  { authorName: "User", type: "user", statement: "Can you explain more?", createdAt: Date.now(), assets: [] },
+  { authorName: "ChatGPT", type: "assistant", statement: "Of course! Let me elaborate.", createdAt: Date.now(), assets: [{ assetType: "image", filename: "test.png", url: "https://example.com/test.png" }] },
+];
+
+export const mockPlaywrightEmptyTurns = [];
+
+export const mockPlaywrightLargeTurns = Array.from({ length: 50 }, (_, i) => ({
+  authorName: i % 2 === 0 ? "User" : "ChatGPT",
+  type: i % 2 === 0 ? "user" : "assistant",
+  statement: `Turn ${i + 1} content here. `.repeat(10),
+  createdAt: Date.now(),
+  assets: [],
+}));

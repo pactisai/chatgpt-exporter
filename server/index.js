@@ -7,12 +7,13 @@ import fs from "fs";
 import { load } from "cheerio";
 import { createHttpTerminator } from "http-terminator";
 import { fileURLToPath } from "url";
-import { scrapeChatGPT } from "../core/scraper.js";
-import { enqueue, getJob } from "./queue.js";
 import { warmPool, closePool } from "../core/pool.js";
-import { getOgImage } from "./og-image.js";
-import { isValidShareUrl } from "../core/validate.js";
-import { getMetrics } from "./metrics.js";
+
+import healthRouter from "./routes/health.js";
+import statsRouter from "./routes/stats.js";
+import jobsRouter from "./routes/jobs.js";
+import scrapeRouter from "./routes/scrape.js";
+import ogImageRouter from "./routes/og-image.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -20,11 +21,43 @@ const PORT = process.env.PORT || 3001;
 const DIST_DIR = path.join(__dirname, "..", "dist");
 
 app.use(helmet({
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      fontSrc: ["'self'", "https:", "data:"],
+      connectSrc: ["'self'"],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: [],
+    },
+  },
   crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    ...(process.env.NODE_ENV !== "production" && { maxAge: 0 }),
+  },
 }));
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*", methods: ["GET", "POST"] }));
 app.use(express.json({ type: "application/json", limit: "10kb" }));
+
+// Trust first proxy for correct client IP behind Railway/nginx
+app.set("trust proxy", 1);
+
+// Additional input validation
+app.use((req, _res, next) => {
+  if (req.body?.url && req.body.url.length > 2048) {
+    return _res.status(400).json({ error: "URL too long" });
+  }
+  next();
+});
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -35,61 +68,14 @@ const apiLimiter = rateLimit({
 });
 app.use("/api", apiLimiter);
 
-app.get("/api/health", (_req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  res.json({ status: "ok" });
-});
+// API routes (SOLID — separated by responsibility)
+app.use("/api", healthRouter);
+app.use("/api", statsRouter);
+app.use("/api", jobsRouter);
+app.use("/api", scrapeRouter);
 
-app.get("/api/stats", (_req, res) => {
-  res.json(getMetrics());
-});
-
-app.get("/og-image.png", async (_req, res) => {
-  try {
-    const png = await getOgImage();
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    res.send(png);
-  } catch { res.status(500).end(); }
-});
-
-app.post("/api/jobs", (req, res) => {
-  const { url } = req.body;
-  if (!isValidShareUrl(url)) {
-    return res.status(400).json({ error: "Valid ChatGPT share URL required." });
-  }
-  const { jobId, status } = enqueue(url.trim());
-  if (!jobId) {
-    return res.status(503).json({ error: "Server busy. Try again later." });
-  }
-  res.json({ jobId, status });
-});
-
-app.get("/api/jobs/:jobId", (req, res) => {
-  const job = getJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: "Job not found" });
-  res.json(job);
-});
-
-app.post("/api/scrape", async (req, res) => {
-  const { url } = req.body;
-  if (!isValidShareUrl(url)) {
-    return res.status(400).json({ error: "Valid ChatGPT share URL required." });
-  }
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-  const send = (d) => res.write(`data: ${JSON.stringify(d)}\n\n`);
-  try {
-    const r = await scrapeChatGPT(url, send);
-    send({ type: "done", ...r });
-  } catch (e) {
-    send({ type: "error", error: e.message });
-  } finally {
-    res.end();
-  }
-});
+// OG image route (top-level, not under /api)
+app.use(ogImageRouter);
 
 app.get("/", (req, res) => {
   const indexPath = path.join(DIST_DIR, "index.html");
