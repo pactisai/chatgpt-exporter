@@ -1,33 +1,41 @@
 import { chromium } from "playwright";
-import { tryFastPath } from "./fastpath.js";
 
-const PAGE_WAIT_MS = 3000;
+const PAGE_WAIT_MS = 5000;
 const STRIDE = 6;
-const SCROLL_WAIT_MS = 200;
+const SCROLL_WAIT_MS = 300;
 
 export async function scrapeChatGPT(shareUrl, onProgress) {
-  onProgress?.({ phase: "fastpath", message: "Trying fast extraction..." });
-  const fast = await tryFastPath(shareUrl);
-  if (fast && fast.totalTurns > 0) {
-    onProgress?.({ phase: "done", message: `Done: ${fast.totalTurns} turns (instant)` });
-    return fast;
+  let browser;
+  try {
+    onProgress?.({ phase: "loading", message: "Launching browser..." });
+
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--no-first-run",
+      ],
+    });
+  } catch (e) {
+    return {
+      turns: [], markdown: "", plainText: "",
+      totalTurns: 0, scrapedAt: new Date().toISOString(),
+      error: `Browser launch failed: ${e.message}`,
+    };
   }
 
-  onProgress?.({ phase: "loading", message: "Launching browser..." });
-
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--disable-dev-shm-usage", "--disable-gpu", "--single-process",
-      "--no-sandbox", "--disable-setuid-sandbox",
-      "--disable-extensions", "--disable-background-networking",
-      "--disable-sync", "--no-first-run",
-    ],
-  });
   const page = await browser.newPage();
   const startTime = Date.now();
 
   try {
+    onProgress?.({ phase: "loading", message: "Loading page..." });
+
     await page.goto(shareUrl, { waitUntil: "load", timeout: 30000 });
     await page.waitForTimeout(PAGE_WAIT_MS);
 
@@ -37,7 +45,11 @@ export async function scrapeChatGPT(shareUrl, onProgress) {
 
     if (turnCount === 0) {
       await browser.close();
-      return { turns: [], markdown: "", plainText: "", totalTurns: 0, scrapedAt: new Date().toISOString(), error: "No turns found." };
+      return {
+        turns: [], markdown: "", plainText: "",
+        totalTurns: 0, scrapedAt: new Date().toISOString(),
+        error: "No conversation turns found. The page may require login or the link is invalid.",
+      };
     }
 
     onProgress?.({ phase: "scraping", message: `Found ${turnCount} turns`, total: turnCount, current: 0 });
@@ -93,7 +105,11 @@ export async function scrapeChatGPT(shareUrl, onProgress) {
     };
   } catch (e) {
     await browser.close();
-    throw e;
+    return {
+      turns: [], markdown: "", plainText: "",
+      totalTurns: 0, scrapedAt: new Date().toISOString(),
+      error: `Scrape failed: ${e.message}`,
+    };
   }
 }
 
