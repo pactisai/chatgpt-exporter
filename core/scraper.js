@@ -4,7 +4,20 @@ const PAGE_WAIT_MS = 3000;
 const TURN_WAIT_MS = 90;
 
 export async function scrapeChatGPT(shareUrl, onProgress) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--single-process",
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-sync",
+      "--no-first-run",
+    ],
+  });
   const page = await browser.newPage();
   const startTime = Date.now();
 
